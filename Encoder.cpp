@@ -41,7 +41,7 @@ int32_t Encoder::get_clicks() {
   return result;
 }
 
-bool Encoder::get_button() {
+bool Encoder::is_button_pressed() {
   return digitalRead(button_pin) == LOW;
 }
 

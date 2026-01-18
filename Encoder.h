@@ -10,7 +10,7 @@ class Encoder {
     void reset();
     int32_t get_position();
     int32_t get_clicks();
-    bool get_button();
+    bool is_button_pressed();
     inline void enable(bool _enable) {
       this->_enable = _enable;
     }

@@ -18,15 +18,15 @@ enum RxTx {
 };
 
 // Define connections to TM1637
-const int soft_clk_pin      = 1; // P0.7
-const int soft_dio_pin      = 0; // P0.6
-const int channel_a_pin     = 9; // P0.0
-const int channel_b_pin     = 8; // P0.5
-const int enc_button_pin    = 12;// P2.9
-const int cw_ptt_pin        = 2; // P0.8
-const int speaker_pin       = 3; // P0.9
-const int dit_pin           = 4; // P0.14
-const int dah_pin           = 5; // P0.15
+const int soft_clk_pin      = 0; // P0.0
+const int soft_dio_pin      = 8; // P0.5
+const int channel_a_pin     = 9; // P1.4
+const int channel_b_pin     = 1; // P0.1
+const int enc_button_pin    = 2; // P0.3
+const int cw_ptt_pin        = 3; // P0.4
+const int speaker_pin       = 4; // P0.14
+const int dit_pin           = 5; // P0.15
+const int dah_pin           = 6; // P2.0
 
 const unsigned int cw_shift = 50000;
 const unsigned int frequency_step = 10000;
@@ -36,6 +36,10 @@ const unsigned long max_frequency = 2970000000ULL - intermediate_frequency;
 const unsigned long min_frequency = 2800000000ULL - intermediate_frequency;
 const int16_t keyer_speed_factor = 400;
 const int16_t tx_timeout = 700;
+typedef void(*button_handler)(void);
+button_handler handlers[4];
+const long handler_interval = 500;
+const long minimum_press_time = 50;
 
 unsigned long frequency = min_frequency + 2000000ULL;
 unsigned long old_frequency;
@@ -52,6 +56,61 @@ inline int extract_display_khz(unsigned long freq) {
   return (freq / 10000) % 10000;
 }
 
+void handle_encoder_button() {
+  int8_t handler_index = 0;
+  long start = millis();
+  bool pressed = false;
+  size_t num_handlers = sizeof(handlers) / sizeof(handlers[0]);
+
+  while (encoder.is_button_pressed()) {
+    if (!pressed) {
+      pressed = true;
+      uint8_t segments[4] = {0};
+      segments[handler_index] = 0x40;
+      display.setSegments(segments, 4, 0);
+    }
+    if ((millis() - start) > (handler_index + 1) * handler_interval) {
+      handler_index++;
+      if (handler_index >= num_handlers) {
+        handler_index = 0;
+        start = millis();
+      }
+      uint8_t segments[4] = {0};
+      segments[handler_index] = 0x40;
+      display.setSegments(segments, 4, 0);
+    }
+    delay(10);
+  }
+
+  if (pressed) {
+    if (handlers[handler_index] != nullptr) {
+      handlers[handler_index]();
+    }
+    // restore frequency on the display
+    display.showNumberDec(extract_display_khz(frequency + intermediate_frequency), true);
+  }
+}
+
+void tune() {
+    uint8_t segments[4] = {0};
+    segments[0] = 0x79;  
+    display.setSegments(segments, 4, 0);
+    digitalWrite(cw_ptt_pin, HIGH);
+    set_rx_tx(TX);
+    bool pressed = false;
+    while (!pressed) {
+      for (int8_t i = 0; i < 5; ++i) {
+        pressed = encoder.is_button_pressed();
+        delay(20);
+      }
+    }
+    set_rx_tx(RX);
+    digitalWrite(cw_ptt_pin, LOW);
+    segments[0] = 0x40;  
+    display.setSegments(segments, 4, 0);
+    delay(500);
+}
+
 void setup() {
   bool i2c_found;
 
@@ -59,6 +118,13 @@ void setup() {
 
   encoder.init(channel_a_pin, channel_b_pin, enc_button_pin);
   encoder.enable(true);
+
+  for (int8_t i = 0; i < sizeof(handlers) / sizeof(handlers[0]); i++) {
+      handlers[i] = nullptr;
+  }
+
+  // Assign the first handler
+  handlers[0] = tune;
 
   i2c_found = si5351.init(SI5351_CRYSTAL_LOAD_8PF, 0, 0);
   
@@ -85,10 +151,12 @@ void set_rx_tx(RxTx _rx_tx_state) {
   if (rx_tx_state == RX) {
     encoder.enable(true);
     si5351.output_enable(SI5351_CLK1, 0);
+    Serial.println("RX");
   } else {
     encoder.enable(false);
     si5351.output_enable(SI5351_CLK1, 1);
     si5351.set_freq(frequency + intermediate_frequency + cw_shift, SI5351_CLK1);
+    Serial.println("TX");
   }
 }
 
@@ -202,6 +270,7 @@ void loop() {
       //encoder.reset();
     }
   }
-  keyer();    
+  keyer();
+  handle_encoder_button();
   delay(1);
 }
