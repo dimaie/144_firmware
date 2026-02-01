@@ -4,13 +4,6 @@
 #include <TM1637Display.h>
 
 #pragma GCC optimize ("O0")
-enum CWKeyUpDownState {
-  UP = 0, DOWN = 1
-};
-
-enum CWKeyDitDahState {
-  DIT = 1, DAH = 3
-};
 
 enum RxTx {
   RX = 0, TX = 1
@@ -56,10 +49,10 @@ const int soft_dio_pin      = 8; // P0.5
 const int channel_a_pin     = 9; // P1.4
 const int channel_b_pin     = 1; // P0.1
 const int enc_button_pin    = 2; // P0.3
-const int cw_ptt_pin        = 3; // P0.4
-const int speaker_pin       = 4; // P0.14
-const int dit_pin           = 5; // P0.15
-const int dah_pin           = 6; // P2.0
+const int ptt_pin           = 3; // P0.4
+const int b28_pin           = 4; // P0.14
+const int b21_pin           = 5; // P0.15
+const int amp_pin           = 6; // P2.0
 
 const unsigned int cw_shift = 50000;
 const unsigned long intermediate_frequency = 886723000ULL;
@@ -337,7 +330,7 @@ void tune() {
     uint8_t segments[4] = {0};
     segments[0] = 0x79;  
     display.setSegments(segments, 4, 0);
-    digitalWrite(cw_ptt_pin, HIGH);
+    digitalWrite(ptt_pin, HIGH);
     set_rx_tx(TX);
     bool pressed = false;
     while (!pressed) {
@@ -347,7 +340,7 @@ void tune() {
       }
     }
     set_rx_tx(RX);
-    digitalWrite(cw_ptt_pin, LOW);
+    digitalWrite(ptt_pin, LOW);
     segments[0] = 0x40;  
     display.setSegments(segments, 4, 0);
     delay(500);
@@ -372,10 +365,10 @@ void setup() {
   display.setBrightness(0x03);
   display.showNumberDec(extract_display_val(frequency + intermediate_frequency), true);
 
-  pinMode(cw_ptt_pin, OUTPUT);
-  pinMode(speaker_pin, OUTPUT);
-  pinMode(dit_pin, INPUT_PULLUP);
-  pinMode(dah_pin, INPUT_PULLUP);
+  pinMode(ptt_pin, OUTPUT);
+  pinMode(b28_pin, OUTPUT);
+  pinMode(b21_pin, OUTPUT);
+  pinMode(amp_pin, OUTPUT);
 }
 
 void set_rx_tx(RxTx _rx_tx_state) {
@@ -392,87 +385,6 @@ void set_rx_tx(RxTx _rx_tx_state) {
 
 RxTx get_rx_tx() {
   return rx_tx_state;
-}
-
-bool is_key_pressed(uint8_t key, uint8_t line_state) {
-  for (uint8_t k = 0; k < 5; ++k) {
-    if (digitalRead(key) != line_state) {
-      return false;
-    }
-    delay(1);
-  }
-  return true;
-}
-
-bool _tone;
-void press_cw_key(CWKeyUpDownState key_state) {
-  if (key_state == DOWN) {
-    if (get_rx_tx() == RX) {
-      set_rx_tx(TX);
-    }
-    _tone = true;
-    digitalWrite(cw_ptt_pin, HIGH);
-  } else if (key_state == UP) {
-    digitalWrite(cw_ptt_pin, LOW);
-    _tone = false;
-  }
-}
-
-void tone_delay(int16_t delay_calc) {
-  int start = millis();
-  while(millis() - start < delay_calc) {
-    digitalWrite(speaker_pin, _tone ? HIGH : LOW);
-    delayMicroseconds(250);
-    digitalWrite(speaker_pin, LOW);
-    delayMicroseconds(250);
-  }
-}
-
-long _time;
-void handle_key(CWKeyDitDahState key_state, bool active) {
-  if (active) {
-    press_cw_key(DOWN);
-  } 
-  int16_t single_delay = keyer_speed_factor / keyer_speed;
-  int16_t delay_calc = single_delay * static_cast<int>(key_state);
-  tone_delay(delay_calc);
-  if (active) {
-    press_cw_key(UP);
-    // reset timer
-    _time = millis();
-  }
-}
-
-void keyer() {
-  // set time variable with the value 0,
-  // so that the diff calculated at
-  // the end of the function will be always
-  // bigger than the timeout value
-  _time = 0;
-  long timeout = millis();
-  bool finished = true;
-  bool keying_complete = true;
-  do {
-    if (is_key_pressed(dit_pin, LOW)) {
-      handle_key(DIT, true);
-      finished = false;
-    } else if (is_key_pressed(dah_pin, LOW)) {
-      handle_key(DAH, true);
-      finished = false;
-    } else {
-      finished = true;
-    }
-    // pause between elements
-    if (!finished) {
-      handle_key(DIT, false);
-    }  
-    timeout = millis() - _time;
-    keying_complete = finished && (timeout >= tx_timeout);
-  } while (!keying_complete);
-  // switch to rx
-  if (get_rx_tx() == TX) {
-    set_rx_tx(RX);
-  }
 }
 
 void loop() {
@@ -496,7 +408,6 @@ void loop() {
     }
   }
 
-  keyer();
   handle_encoder_button();
   delay(1);
 }
