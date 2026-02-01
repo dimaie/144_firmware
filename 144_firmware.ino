@@ -54,16 +54,12 @@ const int b28_pin           = 4; // P0.14
 const int b21_pin           = 5; // P0.15
 const int amp_pin           = 6; // P2.0
 
-const unsigned int cw_shift = 50000;
 const unsigned long intermediate_frequency = 886723000ULL;
-const int16_t keyer_speed_factor = 400;
-const int16_t tx_timeout = 700;
 const long handler_interval = 500;
 const long minimum_press_time = 50;
 
 int current_band_idx;
 unsigned long old_frequency;
-int16_t keyer_speed = 20;
 RxTx rx_tx_state = RX;
 unsigned int frequency_step = 10000; // Default to 100 Hz
 // Options for frequency steps
@@ -87,14 +83,12 @@ const char* band_codes[] = {
 void tune();
 void change_band();
 void change_step();
-void change_speed();
 void change_display_mode();
 
 NamedHandler menu[] = {
   { "tUnE", tune },
   { "bAnd", change_band },
   { "StEP", change_step },
-  { "SPd ", change_speed },
   { "dISP", change_display_mode }
 };
 
@@ -303,26 +297,6 @@ void change_band() {
     uint8_t done_segs[] = {0x40, 0x40, 0x40, 0x40};
     display.setSegments(done_segs);
     delay(300);
-  }
-}
-
-void change_speed() {
-  MenuConfig config = {
-    RANGE, 
-    0,            // num_items not needed for RANGE
-    keyer_speed,  // initial_value
-    nullptr,      // data_ptr not needed
-    1,            // divisor
-    5,            // min_val (WPM)
-    24            // max_val (WPM)
-  };
-
-  keyer_speed = select_from_range(config);
-
-  // Brief flash to confirm
-  for(int i=0; i<2; i++) {
-    display.clear(); delay(80);
-    display.showNumberDec(keyer_speed, false); delay(80);
   }
 }
 
