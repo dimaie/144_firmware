@@ -1,4 +1,3 @@
-
 #include "si5351.h"
 #include "Wire.h"
 #include "Encoder.h"
@@ -18,20 +17,37 @@ enum RxTx {
 };
 
 struct Band {
-  const char* name;
   unsigned long min_rf;
   unsigned long max_rf;
   unsigned long current_vfo; // VFO offset from IF
 };
 
+enum MenuDataType {
+  INT_ARRAY,
+  STRING_ARRAY,
+  RANGE        
+};
 
-// intermediate_frequency = 886,723,000
-// 28 MHz min_vfo = 2,800,000,000 - 886,723,000 = 1,913,277,000
-// Initial frequency = min_vfo + 20,000 (20 kHz)
+struct MenuConfig {
+  MenuDataType type;
+  int num_items;      // array length; ignored for RANGE
+  int initial_value;  // The starting index or starting value
+  const void* data_ptr;
+  int divisor;
+  int min_val;        // for RANGE mode
+  int max_val;        // for RANGE mode
+};
 
 Band bands[] = {
-  { "28", 2800000000ULL, 2970000000ULL, 1913297000ULL }, 
-  { "21", 2100000000ULL, 2145000000ULL, 1213297000ULL }
+  { 2800000000ULL, 2970000000ULL, 1913297000ULL }, 
+  { 2100000000ULL, 2145000000ULL, 1213297000ULL }
+};
+
+typedef void(*button_handler)(void);
+
+struct NamedHandler {
+  const char* label;
+  button_handler handler;
 };
 
 // Define connections to TM1637
@@ -49,8 +65,6 @@ const unsigned int cw_shift = 50000;
 const unsigned long intermediate_frequency = 886723000ULL;
 const int16_t keyer_speed_factor = 400;
 const int16_t tx_timeout = 700;
-typedef void(*button_handler)(void);
-button_handler handlers[4];
 const long handler_interval = 500;
 const long minimum_press_time = 50;
 
@@ -67,7 +81,83 @@ Si5351 si5351;
 Encoder encoder;
 TM1637Display display(soft_clk_pin, soft_dio_pin);
 
-//#define DEBUG
+const char* disp_options[] = {
+  "FLO ",
+  "FHi "
+};
+
+const char* band_codes[] = {
+  "28  ",
+  "21  "
+};
+
+void tune();
+void change_band();
+void change_step();
+void change_speed();
+void change_display_mode();
+
+NamedHandler menu[] = {
+  { "tUnE", tune },
+  { "bAnd", change_band },
+  { "StEP", change_step },
+  { "SPd ", change_speed },
+  { "dISP", change_display_mode }
+};
+
+const int num_handlers = sizeof(menu) / sizeof(menu[0]);
+
+int display_mode = 1; // 0 = Standard kHz, 1 = High Res (100Hz)
+const char* mode_names[] = { "F_LO", "F_Hi" }; 
+
+int extract_display_val(unsigned long freq) {
+  if (display_mode == 0) {
+    // Standard: 28.011.5 -> 2801
+    return freq / 1000000;
+  } else {
+    // High Res: 28.011.5 -> 0115
+    return (freq / 10000) % 10000;
+  }
+}
+
+uint8_t encodeASCII(char c) {
+  // Convert to uppercase for easier matching
+  if (c >= 'a' && c <= 'z') c -= 32;
+
+  switch (c) {
+    case '0'...'9': return display.encodeDigit(c - '0');
+    case 'A': return 0x77; // A
+    case 'B': return 0x7C; // b
+    case 'C': return 0x39; // C
+    case 'D': return 0x5E; // d
+    case 'E': return 0x79; // E
+    case 'F': return 0x71; // F
+    case 'G': return 0x3D; // G
+    case 'H': return 0x76; // H
+    case 'I': return 0x06; // I
+    case 'L': return 0x38; // L
+    case 'N': return 0x54; // n
+    case 'O': return 0x3F; // O
+    case 'P': return 0x73; // P
+    case 'S': return 0x6D; // S
+    case 'T': return 0x78; // t (lowercase style is clearer)
+    case 'U': return 0x3E; // U
+    case '-': return 0x40; // dash
+    case ' ': return 0x00; // space
+    default:  return 0x00;
+  }
+}
+
+void showString(const char* s) {
+  uint8_t data[4] = {0, 0, 0, 0};
+  for (int i = 0; i < 4; i++) {
+    if (s[i] == '\0') break;
+    data[i] = encodeASCII(s[i]);
+  }
+  display.setSegments(data);
+}
+
+
 inline unsigned long get_max_frequency() {
   return bands[current_band_idx].max_rf - intermediate_frequency;
 }
@@ -80,154 +170,140 @@ inline unsigned long& get_frequency() {
   return bands[current_band_idx].current_vfo;
 }
 
-inline int extract_display_khz(unsigned long freq) {
-  return (freq / 10000) % 10000;
+int select_from_range(MenuConfig config) {
+  int current_val = config.initial_value;
+  int8_t click_accumulator = 0;
+  const int8_t clicks_per_step = 4;
+  bool confirmed = false;
+
+  auto update_display = [&](int val) {
+    if (config.type == INT_ARRAY) {
+      const unsigned int* vals = (const unsigned int*)config.data_ptr;
+      display.showNumberDec(vals[val] / config.divisor, false);
+    } else if (config.type == STRING_ARRAY) {
+      const char** vals = (const char**)config.data_ptr;
+      showString(vals[val]);
+    } else if (config.type == RANGE) {
+      display.showNumberDec(val, false); // Direct display for speed
+    }
+  };
+
+  update_display(current_val);
+  while (encoder.is_button_pressed()) { delay(10); }
+  delay(100);
+
+  while (!confirmed) {
+    int8_t clicks = encoder.get_clicks();
+    if (clicks != 0) {
+      click_accumulator += clicks;
+      if (abs(click_accumulator) >= clicks_per_step) {
+        int direction = (click_accumulator > 0) ? 1 : -1;
+        current_val += direction;
+        click_accumulator = 0;
+
+        // Bounds Logic
+        if (config.type == RANGE) {
+          // Constrain to min/max without wrapping
+          if (current_val < config.min_val) current_val = config.min_val;
+          if (current_val > config.max_val) current_val = config.max_val;
+        } else {
+          // Wrap for arrays
+          if (current_val >= config.num_items) current_val = 0;
+          if (current_val < 0) current_val = config.num_items - 1;
+        }
+        update_display(current_val);
+      }
+    }
+    if (encoder.is_button_pressed()) confirmed = true;
+    delay(10);
+  }
+
+  while (encoder.is_button_pressed()) { delay(10); }
+  return current_val;
 }
 
 void handle_encoder_button() {
   int8_t handler_index = 0;
   long start = millis();
   bool selection_started = false;
-  size_t num_handlers = sizeof(handlers) / sizeof(handlers[0]);
 
-  // 1. Enter the selection loop while button is held
   while (encoder.is_button_pressed()) {
     long duration = millis() - start;
 
-    // Only provide visual feedback if we've passed the "Ghost Click" threshold
     if (duration > minimum_press_time) {
-      if (!selection_started) {
-        selection_started = true;
-      }
+      if (!selection_started) selection_started = true;
 
-      // Calculate which handler index we are currently over
-      // (Using integer math to cycle every 'handler_interval')
       handler_index = (duration / handler_interval) % num_handlers;
 
-      uint8_t segments[4] = {0};
-      segments[handler_index] = 0x40; // Display the "-" dash
-      display.setSegments(segments, 4, 0);
+      showString(menu[handler_index].label); 
     }
-    delay(10);
+    delay(1000);
   }
 
-  // 2. Execution Phase (only if it wasn't a ghost click)
   if (selection_started) {
-    if (handlers[handler_index] != nullptr) {
-      handlers[handler_index]();
+    if (menu[handler_index].handler != nullptr) {
+      menu[handler_index].handler();
     }
     
-    // Restore frequency on the display after handler finishes
-    display.showNumberDec(extract_display_khz(get_frequency() + intermediate_frequency), true);
-    
-    // Small debounce delay to prevent immediate re-triggering on button bounce
+    // Restore freq display
+    display.showNumberDec(extract_display_val(get_frequency() + intermediate_frequency), true);
     delay(50); 
   }
 }
 
+void change_display_mode() {
+  MenuConfig config = {
+    STRING_ARRAY, 
+    2,                // Number of items
+    display_mode,     // Initial index
+    disp_options,     // Pointer to our strings
+    1,                // No divisor needed
+    0,
+    1
+  };
+
+  display_mode = select_from_range(config);
+  
+  // Visual confirmation
+  showString(disp_options[display_mode]);
+  delay(500);
+}
+
 void change_step() {
-  bool confirmed = false;
-  int temp_idx = current_step_idx;
-  int8_t click_accumulator = 0;
-  const int8_t clicks_per_step = 4; // Consistency with change_band stiffness
+  MenuConfig config = {
+    INT_ARRAY, 
+    4, 
+    current_step_idx, 
+    step_options, 
+    100
+  };
 
-  // Show current step immediately (e.g., "100")
-  display.showNumberDec(step_options[temp_idx] / 100, false);
-
-  // Wait for button release from the menu trigger
-  while (encoder.is_button_pressed()) { delay(10); }
-  delay(100); 
-
-  while (!confirmed) {
-    int8_t clicks = encoder.get_clicks();
-    
-    if (clicks != 0) {
-      click_accumulator += clicks;
-
-      if (click_accumulator >= clicks_per_step) {
-        temp_idx++;
-        click_accumulator = 0;
-      } 
-      else if (click_accumulator <= -clicks_per_step) {
-        temp_idx--;
-        click_accumulator = 0;
-      }
-
-      // Wrap around the 4 options
-      if (temp_idx >= 4) temp_idx = 0;
-      if (temp_idx < 0) temp_idx = 3;
-
-      // Update display with the step value
-      display.showNumberDec(step_options[temp_idx] / 100, false);
-    }
-
-    if (encoder.is_button_pressed()) {
-      confirmed = true;
-    }
-    delay(10);
-  }
-
-  // Set the new global frequency step
-  current_step_idx = temp_idx;
+  current_step_idx = select_from_range(config);
   frequency_step = step_options[current_step_idx];
 
-  // Visual confirmation (flashing the selected step)
+  // Visual flash confirmation
   for(int i=0; i<2; i++) {
-    display.clear();
-    delay(100);
-    display.showNumberDec(frequency_step / 100, false);
-    delay(100);
+    display.clear(); delay(100);
+    display.showNumberDec(frequency_step / 100, false); delay(100);
   }
-  
-  while (encoder.is_button_pressed()) { delay(10); }
 }
 
 void change_band() {
-  bool confirmed = false;
-  int temp_idx = current_band_idx;
-  int8_t click_accumulator = 0;
-  const int8_t clicks_per_step = 4; // Adjust this for "stiffness" (4-8 is usually good)
-  
-  display.showNumberDec(atoi(bands[temp_idx].name), false);
+  MenuConfig config = {
+    STRING_ARRAY,     // type
+    2,                // num_items (Size of band_codes)
+    current_band_idx, // initial_value (The current selection)
+    band_codes,       // data_ptr (The list of strings)
+    1,                // divisor (unused for strings)
+    0,                // min_val (unused)
+    0                 // max_val (unused)
+  };
 
-  while (encoder.is_button_pressed()) { delay(10); }
-  delay(100); 
+  int new_idx = select_from_range(config);
 
-  while (!confirmed) {
-    int8_t clicks = encoder.get_clicks();
-    
-    if (clicks != 0) {
-      click_accumulator += clicks;
-
-      // Check if we have accumulated enough clicks to move UP
-      if (click_accumulator >= clicks_per_step) {
-        temp_idx++;
-        click_accumulator = 0; // Reset
-      } 
-      // Check if we have accumulated enough clicks to move DOWN
-      else if (click_accumulator <= -clicks_per_step) {
-        temp_idx--;
-        click_accumulator = 0; // Reset
-      }
-
-      // Handle array wrapping
-      int num_bands = sizeof(bands) / sizeof(bands[0]);
-      if (temp_idx >= num_bands) temp_idx = 0;
-      if (temp_idx < 0) temp_idx = num_bands - 1;
-
-      // Update display only when the index actually changes
-      display.showNumberDec(atoi(bands[temp_idx].name), false);
-    }
-
-    if (encoder.is_button_pressed()) {
-      confirmed = true;
-    }
-    delay(10);
-  }
-
-  // Final confirmation and hardware update
-  if (temp_idx != current_band_idx) {
-    current_band_idx = temp_idx;
+  if (new_idx != current_band_idx) {
+    current_band_idx = new_idx;
+    // Hardware update
     si5351.set_freq(get_frequency(), SI5351_CLK0);
     old_frequency = get_frequency();
 
@@ -235,8 +311,26 @@ void change_band() {
     display.setSegments(done_segs);
     delay(300);
   }
-  
-  while (encoder.is_button_pressed()) { delay(10); }
+}
+
+void change_speed() {
+  MenuConfig config = {
+    RANGE, 
+    0,            // num_items not needed for RANGE
+    keyer_speed,  // initial_value
+    nullptr,      // data_ptr not needed
+    1,            // divisor
+    5,            // min_val (WPM)
+    24            // max_val (WPM)
+  };
+
+  keyer_speed = select_from_range(config);
+
+  // Brief flash to confirm
+  for(int i=0; i<2; i++) {
+    display.clear(); delay(80);
+    display.showNumberDec(keyer_speed, false); delay(80);
+  }
 }
 
 void tune() {
@@ -265,14 +359,6 @@ void setup() {
   encoder.init(channel_a_pin, channel_b_pin, enc_button_pin);
   encoder.enable(true);
 
-  for (int8_t i = 0; i < sizeof(handlers) / sizeof(handlers[0]); i++) {
-      handlers[i] = nullptr;
-  }
-
-  handlers[0] = tune;
-  handlers[1] = change_band;
-  handlers[2] = change_step;
-
   current_band_idx = 0;
 
   unsigned long& frequency = get_frequency();
@@ -284,7 +370,7 @@ void setup() {
   old_frequency = frequency;
 
   display.setBrightness(0x03);
-  display.showNumberDec(extract_display_khz(frequency + intermediate_frequency), true);
+  display.showNumberDec(extract_display_val(frequency + intermediate_frequency), true);
 
   pinMode(cw_ptt_pin, OUTPUT);
   pinMode(speaker_pin, OUTPUT);
@@ -406,7 +492,7 @@ void loop() {
     if (old_frequency != frequency) {
       si5351.set_freq(frequency, SI5351_CLK0);
       old_frequency = frequency;
-      display.showNumberDec(extract_display_khz(frequency + intermediate_frequency), true);
+      display.showNumberDec(extract_display_val(frequency + intermediate_frequency), true);
     }
   }
 
