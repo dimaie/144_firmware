@@ -65,6 +65,7 @@ unsigned int frequency_step = 10000; // Default to 100 Hz
 // Options for frequency steps
 const unsigned int step_options[] = {1000, 5000, 10000, 100000};
 int current_step_idx = 2; // Index for 100 Hz
+int preamp;
 
 Si5351 si5351;
 Encoder encoder;
@@ -73,6 +74,11 @@ TM1637Display display(soft_clk_pin, soft_dio_pin);
 const char* disp_options[] = {
   "FLO ",
   "FHi "
+};
+
+const char* preamp_options[] = {
+  "OFF ",
+  "On  "
 };
 
 const char* band_codes[] = {
@@ -84,12 +90,14 @@ void tune();
 void change_band();
 void change_step();
 void change_display_mode();
+void switch_preamp();
 
 NamedHandler menu[] = {
   { "tUnE", tune },
   { "bAnd", change_band },
   { "StEP", change_step },
-  { "dISP", change_display_mode }
+  { "dISP", change_display_mode },
+  { "PrEA", switch_preamp }
 };
 
 const int num_handlers = sizeof(menu) / sizeof(menu[0]);
@@ -112,29 +120,58 @@ uint8_t encodeASCII(char c) {
   if (c >= 'a' && c <= 'z') c -= 32;
 
   switch (c) {
-    case '0'...'9': return display.encodeDigit(c - '0');
+    // Numbers
+    case '0': return 0x3F;
+    case '1': return 0x06;
+    case '2': return 0x5B;
+    case '3': return 0x4F;
+    case '4': return 0x66;
+    case '5': return 0x6D;
+    case '6': return 0x7D;
+    case '7': return 0x07;
+    case '8': return 0x7F;
+    case '9': return 0x6F;
+
+    // Alphabet
     case 'A': return 0x77; // A
     case 'B': return 0x7C; // b
     case 'C': return 0x39; // C
     case 'D': return 0x5E; // d
     case 'E': return 0x79; // E
     case 'F': return 0x71; // F
-    case 'G': return 0x3D; // G
+    case 'G': return 0x3D; // G (looks like 6 but without top bar)
     case 'H': return 0x76; // H
-    case 'I': return 0x06; // I
+    case 'I': return 0x06; // I (same as 1)
+    case 'J': return 0x1E; // J
+    case 'K': return 0x75; // K (approximation)
     case 'L': return 0x38; // L
+    case 'M': return 0x37; // M (double arch approximation)
     case 'N': return 0x54; // n
-    case 'O': return 0x3F; // O
+    case 'O': return 0x3F; // O (same as 0)
     case 'P': return 0x73; // P
-    case 'S': return 0x6D; // S
-    case 'T': return 0x78; // t (lowercase style is clearer)
+    case 'Q': return 0x67; // q
+    case 'R': return 0x50; // r
+    case 'S': return 0x6D; // S (same as 5)
+    case 'T': return 0x78; // t
     case 'U': return 0x3E; // U
-    case '-': return 0x40; // dash
-    case ' ': return 0x00; // space
+    case 'V': return 0x1C; // v
+    case 'W': return 0x1D; // w (approximation)
+    case 'X': return 0x76; // X (looks like H)
+    case 'Y': return 0x6E; // y
+    case 'Z': return 0x5B; // Z (same as 2)
+
+    // Symbols
+    case '-': return 0x40; // Dash
+    case '_': return 0x08; // Underscore
+    case '=': return 0x48; // Equal sign
+    case '[': return 0x39; // Same as C
+    case ']': return 0x0F;
+    case ' ': return 0x00; // Blank
+    case '.': return 0x80; // Decimal point (bit 7)
+    
     default:  return 0x00;
   }
 }
-
 void showString(const char* s) {
   uint8_t data[4] = {0, 0, 0, 0};
   for (int i = 0; i < 4; i++) {
@@ -275,6 +312,40 @@ void change_step() {
   }
 }
 
+void switch_preamp() {
+  MenuConfig config = {
+    STRING_ARRAY,     // type
+    2,                // num_items (Size of band_codes)
+    preamp,           // 
+    preamp_options,   // data_ptr (The list of strings)
+    1,                // divisor (unused for strings)
+    0,                // min_val (unused)
+    0                 // max_val (unused)
+  };
+  preamp = select_from_range(config);
+  
+  // Visual confirmation
+  showString(preamp_options[preamp]);
+  delay(500);
+
+  digitalWrite(amp_pin, preamp ? HIGH : LOW);
+}
+
+void set_band(int band_idx) {
+  if (band_idx != current_band_idx) {
+    current_band_idx = band_idx;
+    // Hardware update
+    si5351.set_freq(get_frequency(), SI5351_CLK0);
+    old_frequency = get_frequency();
+
+    uint8_t done_segs[] = {0x40, 0x40, 0x40, 0x40};
+    display.setSegments(done_segs);
+    digitalWrite(b21_pin, current_band_idx ? HIGH : LOW);
+    digitalWrite(b28_pin, current_band_idx ? LOW : HIGH);
+    delay(300);
+  }
+}
+
 void change_band() {
   MenuConfig config = {
     STRING_ARRAY,     // type
@@ -285,19 +356,7 @@ void change_band() {
     0,                // min_val (unused)
     0                 // max_val (unused)
   };
-
-  int new_idx = select_from_range(config);
-
-  if (new_idx != current_band_idx) {
-    current_band_idx = new_idx;
-    // Hardware update
-    si5351.set_freq(get_frequency(), SI5351_CLK0);
-    old_frequency = get_frequency();
-
-    uint8_t done_segs[] = {0x40, 0x40, 0x40, 0x40};
-    display.setSegments(done_segs);
-    delay(300);
-  }
+  set_band(select_from_range(config));
 }
 
 void tune() {
@@ -326,23 +385,24 @@ void setup() {
   encoder.init(channel_a_pin, channel_b_pin, enc_button_pin);
   encoder.enable(true);
 
-  current_band_idx = 0;
-
-  unsigned long& frequency = get_frequency();
   i2c_found = si5351.init(SI5351_CRYSTAL_LOAD_8PF, 0, 0);
   si5351.drive_strength(SI5351_CLK0, SI5351_DRIVE_8MA);
   si5351.drive_strength(SI5351_CLK1, SI5351_DRIVE_8MA);
-  si5351.set_freq(frequency, SI5351_CLK0);
-
-  old_frequency = frequency;
-
   display.setBrightness(0x03);
-  display.showNumberDec(extract_display_val(frequency + intermediate_frequency), true);
 
   pinMode(ptt_pin, OUTPUT);
   pinMode(b28_pin, OUTPUT);
   pinMode(b21_pin, OUTPUT);
   pinMode(amp_pin, OUTPUT);
+
+  current_band_idx = 1;
+  set_band(0);
+  unsigned long& frequency = get_frequency();
+  display.showNumberDec(extract_display_val(frequency + intermediate_frequency), true);
+  old_frequency = frequency;
+
+  preamp = 0;
+  digitalWrite(amp_pin, preamp ? HIGH : LOW);
 }
 
 void set_rx_tx(RxTx _rx_tx_state) {
